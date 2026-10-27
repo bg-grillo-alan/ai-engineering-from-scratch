@@ -137,6 +137,14 @@ The bursts are dated 2026-10-16, the day of our first test and sweep starts on t
 
 **Our position:** on unified memory, the KV pool is memory that the whole machine gives up. Pass `--mem-fraction-static` on purpose, and tell the other users of the machine before you start. Do not alert on the driver line alone. Alert when a server does not become healthy.
 
+### Memory outside the fraction
+
+The fraction does not bound all the memory that SGLang takes at startup. One user served a 27B model with SGLang on a DGX Spark. The user reported 25 to 40 GB of short-lived allocations outside the memory accounting of SGLang. The FlashInfer autotuner and the CUDA graph capture made them. Run directly on the host, the server froze the machine, and it needed a power cycle. The user then ran it in a container with a memory cap and `--mem-fraction-static 0.50`.
+
+That is a field report from before v0.5.22, and it does not name its SGLang version. Treat it as a warning, not as a fact about v0.5.22. We did not measure it ourselves. Our guard log above shows a fast growth at startup, but it does not separate the pool from the other allocations.
+
+On a GB10 that other programs share, start SGLang in a container with a memory limit. Start below the fraction of 0.7 that our kit used. Log the free memory of the machine once a second during startup. Raise the fraction only after you saw the peak.
+
 ## Our position: set the fraction yourself on any shared machine
 
 On a machine that runs anything besides SGLang, pass `--mem-fraction-static` yourself. The capture kit uses 0.4 on the Mac. With that value, the same benchmark that crashed run 2 finished all 128 requests at concurrency 32.
@@ -220,6 +228,7 @@ One more caution for Apple silicon. The `kv_cache_memory_usage_gb` metric read 0
 - Lower the fraction when long prompts fail with out-of-memory errors in attention.
 - Compare engines only when both report their KV pool sizes.
 - On a GB10, read the pool size in each startup log, because it changes between starts.
+- On a shared GB10, run SGLang in a memory-capped container with a lower fraction, and log free memory.
 ```
 
-Sources: python/sglang/srt/arg_groups/memory_hook.py (handle_gpu_memory_settings), python/sglang/srt/mem_cache/kv_cache_configurator.py (_profile_available_bytes), python/sglang/srt/hardware_backend/mlx/model_runner.py (_compute_pool_size), python/sglang/srt/arg_groups/fields/schedule.py (mem_fraction_static) at v0.5.22, capture/out/oom-exploratory.log, capture/out/server-default.log, capture/out/metrics.txt, python/sglang/srt/utils/common.py (get_available_gpu_memory) at v0.5.22, capture/gpu/out-gb10/server-*.log, capture/gpu/out-gb10/environment.json, capture/gpu/incidents/gb10-memory-guard-pauses.txt, capture/gpu/incidents/gb10-driver-no-memory.txt, issues #39675, #42510, and #6027, the Rawlinson benchmark of 2025-12-05. capture/gpu/out-gb10/server-load-default-kv-max.log, capture/gpu/summary/gb10.json. capture/gpu/out-gb10/server-rate-default-full.log, capture/gpu/out-gb10/server-rate-default-kv-max.log, capture/gpu/out-gb10/server-default.log, capture/gpu/out-gb10/server-pools.log
+Sources: python/sglang/srt/arg_groups/memory_hook.py (handle_gpu_memory_settings), python/sglang/srt/mem_cache/kv_cache_configurator.py (_profile_available_bytes), python/sglang/srt/hardware_backend/mlx/model_runner.py (_compute_pool_size), python/sglang/srt/arg_groups/fields/schedule.py (mem_fraction_static) at v0.5.22, capture/out/oom-exploratory.log, capture/out/server-default.log, capture/out/metrics.txt, python/sglang/srt/utils/common.py (get_available_gpu_memory) at v0.5.22, capture/gpu/out-gb10/server-*.log, capture/gpu/out-gb10/environment.json, capture/gpu/incidents/gb10-memory-guard-pauses.txt, capture/gpu/incidents/gb10-driver-no-memory.txt, issues #39675, #42510, and #6027, the Rawlinson benchmark of 2025-12-05. capture/gpu/out-gb10/server-load-default-kv-max.log, capture/gpu/summary/gb10.json. capture/gpu/out-gb10/server-rate-default-full.log, capture/gpu/out-gb10/server-rate-default-kv-max.log, capture/gpu/out-gb10/server-default.log, capture/gpu/out-gb10/server-pools.log, basbunarhasan, Qwen3.8-27B at 34-38 tok/s on DGX Spark, open-source one-command setup (SGLang + NVFP4 + DSpark), NVIDIA developer forum (2026-08-15)

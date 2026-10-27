@@ -53,16 +53,16 @@ from: manuals/sglang-101/sections/1-1-install-sglang-and-serve-your-first-model.
 | Send a fixed arrival rate | `--request-rate <rate>` |
 | Test output stability | `python3 -m sglang.test.test_deterministic --n-trials 50 --test-mode single` |
 
-## Kit and audit commands
+## Benchmark your server
 type: command-table
-from: manuals/sglang-101/README.md, manuals/sglang-101/capture/README.md
+from: manuals/sglang-101/sections/5-1-sglang-benchmark-serving.md
 
 | Command | What it does |
 |---|---|
-| `python3 capture/run.py --check` | Records the servers again and compares the stable facts. Prints `skipped` without SGLang 0.5.22 and MLX. |
-| `python3 capture/run.py --only small-pool` | Records one server configuration. |
-| `SGLANG_KIT_PROFILE=gb10 python3 capture/gpu/run.py` | Records the eight GPU servers of one profile. |
-| `node scripts/audit_manuals.js --manual sglang-101` | Audits the manual. It must report `TOTAL 0`. |
+| `python -m sglang.benchmark.serving --backend sglang --port 30000 --dataset-name random --num-prompts 32 --max-concurrency 8 --seed 7` | Sends 32 random prompts with at most 8 in flight, then prints the report |
+| `--random-input-len 512 --random-output-len 128` | Sets the prompt and answer lengths |
+| `--random-range-ratio 1.0` | Keeps every prompt at the length you asked for. The default 0.0 makes the average about half |
+| `--request-rate <rate>` | Sends requests on a schedule, so the server can fall behind like real traffic |
 
 ## Defaults that matter
 type: defaults

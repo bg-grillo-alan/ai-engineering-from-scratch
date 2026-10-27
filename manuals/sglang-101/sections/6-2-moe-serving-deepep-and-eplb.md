@@ -89,6 +89,10 @@ One likely cause is the union of experts. At concurrency 1, each layer reads the
 
 That is arithmetic, not a measurement, and real routing is less even. The time per token kept rising from 32 to 64 users, where the union grows only about 13 percent. So attention, KV reads, and prefill steps in the sweep grow with the batch too. The name says the model activates about 3B parameters per token. A batch of 64 reads close to all 30B.
 
+Our prompts limit this result too. The `random` dataset sends ShareGPT text, cut or repeated to 512 tokens, and every answer ran to 128 tokens.
+
+A 2026 benchmark study by NVIDIA researchers, SPEED-Bench, tested an MoE model with random token ids. In some layers, 20 to 30 percent of the experts stayed idle. Our prompts are real text, and they are still different from your traffic. We did not measure which experts they chose. Run the same sweep with a sample of your own prompts before you plan capacity from it.
+
 **Our position:** on one box, plan an MoE model by the bytes a full batch reads, not by its active parameters. Quantize first. The FP8 checkpoint with an FP8 KV cache cut the time per token to between 0.52 and 0.57 of BF16 at every concurrency we measured. It quantized all weights and the KV cache, so we cannot assign the gain to the experts alone.
 
 ## Our position
@@ -122,4 +126,4 @@ caption: Read each column top to bottom. Numbers are decode tokens per second fo
 - Size a one-box MoE server by the expert bytes a full batch reads.
 ```
 
-Sources: python/sglang/srt/arg_groups/fields/exec_.py, python/sglang/srt/arg_groups/overrides.py (_a2a_ep_size), python/sglang/srt/arg_groups/moe_hook.py, python/sglang/srt/eplb/eplb_manager.py, python/sglang/srt/batch_overlap/two_batch_overlap.py, python/sglang/srt/observability/metrics_collector.py, and docs/docs/advanced_features/expert_parallelism.mdx, all at v0.5.22. LMSYS, "Deploying DeepSeek with PD Disaggregation and Large-Scale Expert Parallelism on 96 H100 GPUs", 2025-05-05. Ant Group on the LMSYS blog, 2025-09-26. Crusoe, MLPerf Inference v6.1 results, 2026-09-16. Issue #9787. capture/gpu/summary/gb10.json, capture/gpu/sweep.py, and the config.json of Qwen/Qwen3-30B-A3B-Instruct-2507.
+Sources: python/sglang/srt/arg_groups/fields/exec_.py, python/sglang/srt/arg_groups/overrides.py (_a2a_ep_size), python/sglang/srt/arg_groups/moe_hook.py, python/sglang/srt/eplb/eplb_manager.py, python/sglang/srt/batch_overlap/two_batch_overlap.py, python/sglang/srt/observability/metrics_collector.py, and docs/docs/advanced_features/expert_parallelism.mdx, all at v0.5.22. LMSYS, "Deploying DeepSeek with PD Disaggregation and Large-Scale Expert Parallelism on 96 H100 GPUs", 2025-05-05. Ant Group on the LMSYS blog, 2025-09-26. Crusoe, MLPerf Inference v6.1 results, 2026-09-16. Issue #9787. capture/gpu/summary/gb10.json, capture/gpu/sweep.py, and the config.json of Qwen/Qwen3-30B-A3B-Instruct-2507. python/sglang/benchmark/datasets/random.py (sample_random_requests) at v0.5.22. Abramovich and others, SPEED-Bench: A Unified and Diverse Benchmark for Speculative Decoding, arXiv 2604.09557 (2026-02, revised 2026-05).

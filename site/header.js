@@ -435,7 +435,91 @@
     syncLayout();
   }
 
+  var BANNER_KEY = 'aifs:banner:dismissed';
+  var BANNER_ID = 'manuals-20261023';
+  var BANNER_HTML = '<div class="site-banner-inner">'
+    + '<span class="site-banner-tag">New</span>'
+    + '<p class="site-banner-text">'
+    + '<span class="site-banner-long">Detailed manuals for vLLM, Miles, SGLang, A2A, Docker Sandboxes and Reverse Engineering. </span>'
+    + '<span class="site-banner-short">Detailed manuals. </span>'
+    + '<a class="site-banner-link" href="manuals.html">Read the manuals<span aria-hidden="true"> →</span></a>'
+    + '</p>'
+    + '<button type="button" class="site-banner-close" aria-label="Dismiss the manuals announcement">'
+    + '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+    + '<path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" fill="none"/></svg>'
+    + '</button></div>';
+
+  function bannerDismissed() {
+    try {
+      return localStorage.getItem(BANNER_KEY) === BANNER_ID;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function rememberBannerDismissed() {
+    try {
+      localStorage.setItem(BANNER_KEY, BANNER_ID);
+    } catch (_) {}
+  }
+
+  function setupBanner() {
+    var header = document.querySelector('.site-header');
+    if (!header || !header.parentNode || document.documentElement.hasAttribute('data-poster') || document.querySelector('.site-banner') || bannerDismissed()) return;
+
+    var root = document.documentElement;
+    var banner = document.createElement('aside');
+    banner.className = 'site-banner';
+    banner.setAttribute('aria-label', 'Announcement');
+    banner.innerHTML = BANNER_HTML;
+    adaptRouteTree(banner);
+    header.parentNode.insertBefore(banner, header);
+    root.classList.add('has-site-banner');
+
+    var height = 0;
+    var frame = 0;
+
+    function syncOffset() {
+      frame = 0;
+      var offset = Math.max(0, height - (window.pageYOffset || root.scrollTop || 0));
+      root.style.setProperty('--site-banner-offset', offset + 'px');
+    }
+
+    function requestSync() {
+      if (!frame) frame = window.requestAnimationFrame(syncOffset);
+    }
+
+    function measure() {
+      height = banner.offsetHeight;
+      root.style.setProperty('--site-banner-h', height + 'px');
+      syncOffset();
+    }
+
+    var resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    if (resizeObserver) resizeObserver.observe(banner);
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', requestSync, { passive: true });
+    measure();
+
+    banner.querySelector('.site-banner-close').addEventListener('click', function () {
+      rememberBannerDismissed();
+      if (resizeObserver) resizeObserver.disconnect();
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', requestSync);
+      if (frame) window.cancelAnimationFrame(frame);
+      var scrollY = window.pageYOffset || root.scrollTop || 0;
+      banner.parentNode.removeChild(banner);
+      root.classList.remove('has-site-banner');
+      root.style.removeProperty('--site-banner-h');
+      root.style.removeProperty('--site-banner-offset');
+      if (scrollY > 0) window.scrollTo({ top: Math.max(0, scrollY - height), behavior: 'instant' });
+      var logo = header.querySelector('.logo');
+      if (logo) logo.focus();
+    });
+  }
+
   function load() {
+    setupBanner();
     var headers = document.querySelectorAll('.site-header');
     for (var i = 0; i < headers.length; i++) setupNavigation(headers[i]);
     var footers = document.querySelectorAll('.footer-links');

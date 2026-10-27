@@ -126,6 +126,8 @@ site/sitemap-practice.xml
 site/practice/
 site/practice-map.json
 site/manual-*.html
+site/manual/
+site/sitemap-manuals.xml
 site/manuals-data.js
 site/manuals.html
 

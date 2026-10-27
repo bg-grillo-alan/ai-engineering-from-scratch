@@ -16,7 +16,7 @@
 
 ## The Problem
 
-Lesson 17 is the measurement methodology. Lesson 30 is the 2026 state of the measurement. The picture shifted materially between 2024 and late 2025: each domain crossed a threshold that the 2024 frameworks did not anticipate.
+Lesson 17 is the measurement methodology. Lesson 30 is the 2026 state of the measurement. The picture shifted materially between 2024 and late 2025: three of the four domains crossed a threshold that the 2024 frameworks did not anticipate.
 
 ## The Concept
 

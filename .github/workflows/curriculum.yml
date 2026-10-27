@@ -33,6 +33,8 @@ on:
       - "scripts/test_skill_artifact_bundles.py"
       - "scripts/test_translate_workflow.py"
       - "scripts/translate_matrix.py"
+      - "scripts/translation_freshness.py"
+      - "scripts/translate_lessons.py"
       - "scripts/translate_ui_strings.py"
       - "scripts/test_translate_ui_strings.py"
       - "site/test_learning_paths.js"
@@ -92,6 +94,8 @@ on:
       - "scripts/test_skill_artifact_bundles.py"
       - "scripts/test_translate_workflow.py"
       - "scripts/translate_matrix.py"
+      - "scripts/translation_freshness.py"
+      - "scripts/translate_lessons.py"
       - "scripts/translate_ui_strings.py"
       - "scripts/test_translate_ui_strings.py"
       - "site/test_learning_paths.js"
@@ -168,6 +172,8 @@ jobs:
         run: node --test site/test_star_nudge.js
       - name: lesson walkthrough syncs steps and schedules revisits
         run: node --test site/test_lesson_walkthrough.js
+      - name: lesson quizzes are placed once, before the footer, in every language
+        run: node --test site/test_quiz_placement.js
       - name: agent machine simulation and page stay in sync
         run: node --test site/test_agent_machine.js
       - name: decompiler machine simulation and page stay in sync

@@ -180,7 +180,7 @@ test('evidence is linked to the repository, never printed', () => {
   const manual = manuals.loadManual(path.join(__dirname, '..', 'manuals', 'sglang-101'));
   const html = manuals.printPage(manual);
   const listing = html.match(/<figure class="m-listing">[\s\S]*?<\/figure>/)[0];
-  assert.match(listing, /<a class="m-evidence" href="https:\/\/github\.com\/rohitg00\/ai-engineering-from-scratch\/blob\/main\/manuals\/sglang-101\/capture\/[^"]+" target="_blank" rel="noopener">Full log<\/a>/);
+  assert.match(listing, /<a class="m-evidence" href="https:\/\/github\.com\/rohitg00\/ai-engineering-from-scratch\/blob\/[0-9a-f]{40}\/manuals\/sglang-101\/capture\/[^"]+" target="_blank" rel="noopener">Full log<\/a>/);
   assert.doesNotMatch(listing.replace(/href="[^"]*"/g, ''), /capture\//);
   assert.match(html, /<a class="m-evidence" href="[^"]+\/summary\/l4\.json"[^>]*>Raw runs<\/a>/);
   assert.match(html, /<a class="m-evidence" href="[^"]+\/summary\/l4-throttled\.json"[^>]*>Raw runs<\/a>/);
@@ -192,6 +192,9 @@ test('evidence is linked to the repository, never printed', () => {
     assert.equal(fs.statSync(full).isDirectory(), kind === 'tree', rel);
   }
   assert.throws(() => manuals.evidenceUrl(path.join(__dirname, '..', 'manuals', 'sglang-101', 'capture', 'missing.log'), 'doc.md:1'), /evidence path manuals\/sglang-101\/capture\/missing\.log does not exist/);
+  assert.equal(manuals.evidenceRevision({ VERCEL_GIT_COMMIT_SHA: 'ABC1234def' }), 'ABC1234def');
+  assert.match(manuals.evidenceRevision({}), /^(?:[0-9a-f]{40}|main)$/);
+  assert.match(manuals.evidenceUrl(path.join(__dirname, '..', 'manuals', 'sglang-101', 'capture', 'gpu'), 'doc.md:1'), /\/tree\/(?:[0-9a-f]{40}|main)\/manuals\/sglang-101\/capture\/gpu$/);
 });
 
 test('numbers figures per part and renders the print edition', () => {
@@ -320,6 +323,48 @@ test('web output is flat, lists only ready manuals, and a scoped build leaves ot
   assert.match(fs.readFileSync(path.join(site, 'manuals-data.js'), 'utf8'), /"url": "manual-demo-101\.html"/);
 });
 
+test('a ready manual gets one indexable page per section, a dated sitemap, and an llms.txt block', () => {
+  const { root, dir } = fixture();
+  const site = tempDir('manuals-sections-');
+  fs.writeFileSync(path.join(site, 'sitemap-index.xml'), '<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n</sitemapindex>\n');
+  fs.writeFileSync(path.join(site, 'llms.txt'), '# Site\n\n## Developer resources\n- one\n\n## Phase 0: Setup\n- lesson\n');
+  manuals.writeWeb(manuals.loadAll({ root }), site);
+  assert.ok(!fs.existsSync(path.join(site, 'manual', 'manual-demo-101')));
+  assert.ok(!fs.existsSync(path.join(site, 'sitemap-manuals.xml')));
+  fs.writeFileSync(path.join(dir, 'manual.json'), manifest({ status: 'ready' }));
+  fs.writeFileSync(path.join(dir, 'README.md'), '# Demo\n');
+  manuals.writeWeb(manuals.loadAll({ root }), site);
+  manuals.writeWeb(manuals.loadAll({ root }), site);
+  const pages = fs.readdirSync(path.join(site, 'manual', 'manual-demo-101')).sort();
+  assert.deepEqual(pages, ['front.html', 'intro.html', 'ref-figures.html']);
+  const page = fs.readFileSync(path.join(site, 'manual', 'manual-demo-101', 'intro.html'), 'utf8');
+  assert.match(page, /<base href="\/">/);
+  assert.match(page, /<link rel="canonical" href="https:\/\/aiengineeringfromscratch\.com\/manual-demo-101\/intro">/);
+  assert.doesNotMatch(page, /noindex/);
+  assert.equal((page.match(/<h1\b/g) || []).length, 1);
+  assert.doesNotMatch(page, /<a\b[^>]*\shref="#/);
+  assert.match(page, /rel="prev" href="\/manual-demo-101\/front"/);
+  assert.match(page, /rel="next" href="\/manual-demo-101\/ref-figures"/);
+  const ld = JSON.parse(page.match(/<script type="application\/ld\+json">(.*?)<\/script>/s)[1]);
+  const types = ld['@graph'].map(node => node['@type']);
+  assert.deepEqual(types, ['TechArticle', 'BreadcrumbList']);
+  assert.equal(ld['@graph'][0].isPartOf.url, 'https://aiengineeringfromscratch.com/manual-demo-101');
+  assert.equal(ld['@graph'][1].itemListElement.length, 4);
+  const full = fs.readFileSync(path.join(site, 'manual-demo-101.html'), 'utf8');
+  assert.match(full, /<a class="m-section-link" href="\/manual-demo-101\/intro">1\.1<\/a>/);
+  assert.match(full, /"@type":"TechArticle"/);
+  const sitemap = fs.readFileSync(path.join(site, 'sitemap-manuals.xml'), 'utf8');
+  for (const loc of ['manuals', 'manual-demo-101', 'manual-demo-101/front', 'manual-demo-101/intro', 'manual-demo-101/ref-figures']) {
+    assert.match(sitemap, new RegExp(`<loc>https://aiengineeringfromscratch\\.com/${loc}</loc>\\n    <lastmod>\\d{4}-\\d{2}-\\d{2}</lastmod>`));
+  }
+  const index = fs.readFileSync(path.join(site, 'sitemap-index.xml'), 'utf8');
+  assert.equal(index.split('sitemap-manuals.xml').length - 1, 1);
+  const llms = fs.readFileSync(path.join(site, 'llms.txt'), 'utf8');
+  assert.equal(llms.split('## Manuals').length - 1, 1);
+  assert.ok(llms.indexOf('## Manuals') > llms.indexOf('## Developer resources') && llms.indexOf('## Manuals') < llms.indexOf('## Phase 0'));
+  assert.match(llms, /- \[1\.1 [^\]]+\]\(https:\/\/aiengineeringfromscratch\.com\/manual-demo-101\/intro\)/);
+});
+
 test('scoped loading ignores a broken sibling manual', () => {
   const { root } = fixture();
   fs.mkdirSync(path.join(root, 'broken-101'));
@@ -422,4 +467,13 @@ test('print and web editions carry the author, license, and colophon', () => {
   const page = fs.readFileSync(path.join(site, 'manual-demo-101.html'), 'utf8');
   assert.match(page, /id="colophon"/);
   assert.match(page, /<footer class="site-footer">/);
+});
+
+test('capture links in prose are pinned evidence links and reference tables print no capture file names', () => {
+  const acc = manuals.newInline();
+  const html = manuals.inlineHtml('See [output](manuals/reverse-engineering-101/capture/out/01-doctor-ghidra.json).', 'doc.md:1', acc);
+  assert.match(html, /href="https:\/\/github\.com\/[^/]+\/[^/]+\/blob\/(?:[0-9a-f]{40}|main)\/manuals\/reverse-engineering-101\/capture\/out\/01-doctor-ghidra\.json" target="_blank" rel="noopener">output<\/a>/);
+  const table = fs.readFileSync(path.join(__dirname, '..', 'manuals', 'reverse-engineering-101', 'sections', 'r-1-commands-and-tools.md'), 'utf8');
+  assert.doesNotMatch(table, /Capture file/);
+  assert.doesNotMatch(table, /\|\s*`\d\d-[^`]*\.json`\s*\|/);
 });

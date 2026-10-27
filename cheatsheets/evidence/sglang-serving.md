@@ -26,11 +26,11 @@ Abbreviations: S = manuals/sglang-101/sections, R = manuals/sglang-101, C = manu
 - --request-rate for fixed arrivals: S/5-1-sglang-benchmark-serving.md:70
 - test_deterministic with --n-trials and --test-mode: S/4-6-deterministic-inference-and-logprobs.md:50
 
-## Kit and audit commands (command-table, 4 rows)
-- python3 capture/run.py --check: R/README.md:46
-- python3 capture/run.py --only small-pool: C/README.md:14
-- SGLANG_KIT_PROFILE=gb10 python3 capture/gpu/run.py: C/README.md:52
-- node scripts/audit_manuals.js --manual sglang-101, TOTAL 0: R/README.md:61
+## Benchmark your server (command-table, 4 rows)
+- python -m sglang.benchmark.serving --backend sglang --port 30000 --dataset-name random --num-prompts 32 --max-concurrency 8 --seed 7: S/5-1-sglang-benchmark-serving.md:27-29
+- --random-input-len 512 --random-output-len 128: S/5-1-sglang-benchmark-serving.md:28
+- --random-range-ratio default 0.0 halves the average prompt: S/5-1-sglang-benchmark-serving.md:40,45
+- --request-rate sends on a schedule, a cap is a closed loop: S/5-1-sglang-benchmark-serving.md:42,235
 
 ## Defaults that matter (defaults, 7 rows)
 - --schedule-policy fcfs: S/2-2-the-scheduler-loop-and-schedule-policy.md:60

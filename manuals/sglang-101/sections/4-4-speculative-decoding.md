@@ -34,6 +34,8 @@ The accept thresholds `--speculative-accept-threshold-single` and `--speculative
 
 `--speculative-algorithm` accepts `EAGLE`, `EAGLE3`, `NEXTN`, `STANDALONE`, `NGRAM`, `DFLASH`, `DSPARK`, and `UNO`. `NEXTN` is another name for `EAGLE`. For DeepSeek V3 and other models that include multi-token prediction layers in the checkpoint, SGLang sets the draft model path to the model path. `NGRAM` needs no draft model at all. It looks up repeated token sequences in the text it has already seen.
 
+With `NGRAM`, SGLang turns off mixed chunked prefill {{code}}. The docs page at v0.5.22 also says that `NGRAM` turns off the overlap scheduler and runs on CUDA only. The v0.5.22 code accepts CUDA, CPU, and XPU, and it turns the overlap off only on CPU {{code}}. Read `disable_overlap_schedule` from `GET /server_info` to see what your server runs. When you compare `NGRAM` with no speculation, run both with the same overlap setting.
+
 When you leave the shape unset, SGLang chooses `(num_steps, topk, num_draft_tokens)` from the model architecture.
 
 | Model | Default shape |
@@ -52,6 +54,13 @@ A throughput test with speculation on and no explicit limit measures a server th
 ## What to measure
 
 The scheduler logs `accept len` and `accept rate` on each decode log line, and `/metrics` exports `sglang:spec_accept_length` and `sglang:spec_accept_rate`. Measure them on your own prompts, because acceptance depends on the text and on the draft. A field report by David Noel Ng {{field David Noel Ng 2026-08}} on two GH200 measured 3.5 to 5.05 tokens on DeepSeek-V4-Flash after a loader fix.
+
+Run a sample of your own traffic with and without speculation. Keep your real output lengths, and pass `--disable-ignore-eos` to the benchmark client. With no traffic sample, `--dataset-name speed-bench` reads a local copy of the SPEED-Bench prompts at v0.5.22 {{code}}. Compare these numbers:
+
+1. The acceptance length, from `sglang:spec_accept_length`.
+2. The median TPOT and the output throughput.
+3. The P99 ITL and the P99 TTFT, because a gain in the median can hide a loss in the tail.
+4. The acceptance length of your longest answers alone. Each `/generate` response gives it as `spec_accept_length` in `meta_info`.
 
 Then sweep concurrency with speculation on and off, and find where the two lines cross. Ant Group {{field Ant Group 2025-09}} measured this on DeepSeek-R1 on H20. Longer drafts gained 21% at batch 1 and lost about 18% at batch 32.
 
@@ -156,11 +165,89 @@ caption: Violet is default TPOT divided by EAGLE-3 TPOT. Teal is EAGLE-3 output 
 
 The pool explains the difference. With 15 requests in the pool, the rest waited for a slot. At concurrency 32, the median time to first token was 8,040 ms with EAGLE-3 and 2,970 ms without it. On a card where the KV pool is the limit, the draft spends the memory that the batch needs.
 
+## Know the limits of our results
+
+Both sweeps used the `random` dataset of the benchmark client, with 512 tokens in, 128 tokens out, and `ignore_eos` on. At v0.5.22 that dataset takes the first turn of ShareGPT conversations, then cuts or repeats it to 512 tokens {{code}}. It is real text, but it is not your traffic.
+
+Other teams found that tests like ours can overstate the gain. We did not measure these effects ourselves:
+
+- A 2026 benchmark study by NVIDIA researchers, SPEED-Bench, found that synthetic prompts overstated speculative throughput by 23 percent on average. It also found that the best draft length fell to 1 as the batch grew.
+- The same study found that random token ids left 20 to 30 percent of the experts idle in some layers of an MoE target.
+- A 2026 study of EAGLE-3 and other drafts, Test-Time Speculation, found that the acceptance length falls as the answer grows. On MATH answers that ran toward 20,000 tokens, it fell from about 3.7 to about 1.5.
+- A 2025 study of serving benchmarks compared speculation with the baseline. The median TPOT was 1.3 times lower, and the P99 TPOT was 1.16 times higher. TTFT also rose, because the draft runs its own prefill.
+
+So our gains hold for 128 generated tokens with the end token ignored, on our test prompts. They do not predict the gain on long chat answers or on reasoning traces. Our reading of the GB10 result also depends on how real tokens choose their experts, and we did not measure the routing.
+
+## Real prompts on the L4
+
+On 2026-10-23 we ran the same L4 sweep on four datasets: the random set, ShareGPT, GSM8K questions, and code prompts. The clock was locked at 900 MHz, the cache was flushed before each run, and each point had two seeds.
+
+```listing
+title: speculation on four datasets, Qwen3-8B on SGLang 0.5.22, our L4 at 900 MHz
+source: capture/gpu/out-l4/spec-real-prompts.txt
+lang: text
+note: The time per token at 8 users and the output at 32 users. The acceptance lines and the notes are cut.
+---
+median TPOT at 8 users: default / EAGLE3 / NGRAM
+random     67.6 to 68.2 / 33.8 to 39.4 / 68.2 to 71.4 ms
+ShareGPT   66.4 to 68.6 / 39.5 to 43.1 / 69.5 to 72.4 ms
+GSM8K      65.5 / 33.3 to 34.3 / 54.6 to 55.0 ms
+code       65.9 to 66.4 / 36.8 / 58.2 to 58.8 ms
+…
+output tok/s at 32 users: default / EAGLE3 / NGRAM
+random     250 to 254 / 239 to 242 / 236 to 250
+ShareGPT   281 to 288 / 277 to 283 / 245 to 256
+GSM8K      397 / 648 to 660 / 433 to 435
+code       365 to 366 / 566 to 581 / 377 to 386
+…
+```
+
+EAGLE-3 cut the time per token about in half at 8 users on every dataset, with an acceptance length of 2.35 to 2.78. At 32 users it gave 1.6 times the output on GSM8K and code. On the random set and ShareGPT it gave no more output. There its first token came 2 to 3 times later, because the draft took pool space that the queue needed.
+
+NGRAM helped only on GSM8K and code, by about 1.1 to 1.2 times at 8 users. On the other two sets it was slower, and its P99 ITL rose to 244 to 779 ms. So the dataset changed the result more than the random set suggests. Test on your own traffic.
+
+## Acceptance over a long answer
+
+We tested the claim of Test-Time Speculation on shorter answers. On 2026-10-23 we ran `Qwen/Qwen3-8B-FP8` with an EAGLE-3 draft, 3 steps, top-k 1, and 4 draft tokens. This was on the second GPU of our L4 node, which its owner shares and which had no clock lock. Each of 8 prompts ran with thinking on, greedy, alone, up to 4,096 tokens. We read `spec_verify_ct` after answers of 256, 512, 1,024, 2,048, and 4,096 tokens.
+
+```listing
+title: mean acceptance length by position in the answer
+source: capture/gpu/out-l4/eagle3-acceptance-by-position.txt
+lang: text
+note: The range across prompts, with the number of prompts that reached each segment in brackets. The vLLM column comes from the same prompts on vLLM 0.31.0.
+---
+segment of the output   SGLang                 vLLM
+0 to 256                2.05 to 2.64 (8)       2.14 to 2.51 (8)
+256 to 512              1.95 to 2.64 (8)       2.09 to 2.55 (8)
+512 to 1,024            2.11 to 2.77 (8)       2.12 to 2.79 (8)
+1,024 to 2,048          2.09 to 2.47 (5)       1.72 to 2.66 (5)
+2,048 to 4,096          2.33 and 2.48 (2)      2.35 and 2.60 (2)
+```
+
+Up to 4,096 tokens, the acceptance length did not fall steadily. It stayed at about 2.1 to 2.8 tokens for each verify step on both engines. Only 2 of the 8 prompts ran past 2,048 tokens before the end token, so the last segment rests on two answers. The clock changes the speed and not the acceptance. Our limit of 4,096 tokens came from the memory we could use on that GPU. So our test did not reach the range of the study.
+
+A second test used `Qwen/Qwen3-8B` in BF16 at 8 users, with answers of up to 2,048 tokens and no ignore-eos. The median answer was 1,800 to 2,000 tokens.
+
+```listing
+title: EAGLE3 acceptance on answers of about 2,000 tokens, 8 users
+source: capture/gpu/out-l4/eagle3-long-outputs.txt
+lang: text
+note: The table of the file. The comparison with short outputs is cut.
+---
+engine          dataset    mean acceptance length   accepted per draft position 1 / 2 / 3
+SGLang EAGLE3   GSM8K      2.68
+SGLang EAGLE3   ShareGPT   2.32
+vLLM EAGLE3     GSM8K      2.69                     0.77 / 0.54 / 0.38
+vLLM EAGLE3     ShareGPT   2.35                     0.67 / 0.42 / 0.26
+```
+
+On short answers in the same session, SGLang gave 2.69 to 2.78 on GSM8K and 2.33 to 2.43 on ShareGPT. Its long answers stayed within 0.01 of those ranges. We have no short-answer acceptance for vLLM from this session, so its rows show only the level on long answers.
+
 ## Our position
 
 Treat speculative decoding as a latency tool for low and middle concurrency. Turn it on for interactive traffic with a few users per replica. Leave it off for batch jobs and high concurrency on a card where the KV pool is the limit, as on our L4. On the GB10, where the pool had room, speculation still gave 1.17 times the throughput at 64 users.
 
-Measure the cross point on your model before you accept that rule. On the mixture-of-experts model above, speculation still won at concurrency 32 on the GB10. On the dense model on the L4, it stopped winning at 32, because the draft took nearly 60 percent of the pool.
+Measure the cross point on your model before you accept that rule. On the mixture-of-experts model above, speculation still won at concurrency 32 on the GB10. On the dense model on the L4, it gave no more throughput at 32, because the draft took nearly 60 percent of the pool. Measure it with your own prompts and output lengths, with the list in the section on what to measure.
 
 Always set `--max-running-requests` yourself when speculation is on. Choose it from the concurrency where your sweep shows speculation still wins.
 
@@ -178,8 +265,9 @@ Use the draft layers that come with your model first. A model with multi-token p
 - Turn on speculative decoding for low-concurrency interactive traffic, and measure where it stops winning.
 - Set --max-running-requests explicitly whenever --speculative-algorithm is set.
 - Read accept len in the decode log on your own prompts before you trust a speedup.
+- Test speculation with real output lengths and --disable-ignore-eos, and compare P99 ITL and P99 TTFT, not only the median.
 - Check the draft model context length against your longest prompts.
 - Treat SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 as a removed check, and test long prompts yourself.
 ```
 
-Sources: capture/gpu/out-gb10/server-eagle3.log, capture/gpu/out-l4/server-eagle3-no-env.log, capture/gpu/out-l4/server-load-eagle3.log, capture/gpu/summary/l4.json, server-eagle3.command.txt, eagle3-bench-random-c1.txt, eagle3-bench-random-c8.txt, eagle3-bench-random-c32.txt, capture/gpu/summary/gb10.json, python/sglang/srt/configs/model_config.py (_derive_context_length), docs/cookbook/specbundle/specbundle_usage.mdx, python/sglang/srt/speculative/eagle_worker_v2.py (forward_batch_generation), speculative/eagle_utils.py (build_tree_kernel_efficient, eagle_sample), arg_groups/speculative_hook.py (_auto_choose_speculative_params, _handle_eagle_family, _handle_ngram, _resolve_speculative_algorithm_alias), arg_groups/fields/spec.py, managers/scheduler_components/metrics_reporter.py, and observability/metrics_collector.py at v0.5.22; issues #5274 and #6783; PR #33276; field reports by Ant Group on the LMSYS blog (2025-09-26) and David Noel Ng (2026-08-04); vendor reports by Google Cloud (2025-11-25) and Modal with Decagon (2025-11-13).
+Sources: capture/gpu/out-gb10/server-eagle3.log, capture/gpu/out-l4/server-eagle3-no-env.log, capture/gpu/out-l4/server-load-eagle3.log, capture/gpu/summary/l4.json, server-eagle3.command.txt, eagle3-bench-random-c1.txt, eagle3-bench-random-c8.txt, eagle3-bench-random-c32.txt, capture/gpu/summary/gb10.json, python/sglang/srt/configs/model_config.py (_derive_context_length), docs/cookbook/specbundle/specbundle_usage.mdx, python/sglang/srt/speculative/eagle_worker_v2.py (forward_batch_generation), speculative/eagle_utils.py (build_tree_kernel_efficient, eagle_sample), arg_groups/speculative_hook.py (_auto_choose_speculative_params, _handle_eagle_family, _handle_ngram, _disable_overlap_schedule_for_cpu, _resolve_speculative_algorithm_alias), arg_groups/fields/spec.py, managers/tokenizer_manager.py (speculative meta_info), python/sglang/benchmark/datasets/random.py (sample_random_requests), python/sglang/benchmark/datasets/speed_bench.py, python/sglang/benchmark/serving.py (--disable-ignore-eos), docs/docs/advanced_features/speculative_decoding.mdx (the NGRAM row), managers/scheduler_components/metrics_reporter.py, and observability/metrics_collector.py at v0.5.22; issues #5274 and #6783; PR #33276; field reports by Ant Group on the LMSYS blog (2025-09-26) and David Noel Ng (2026-08-04); vendor reports by Google Cloud (2025-11-25) and Modal with Decagon (2025-11-13); Abramovich and others, SPEED-Bench: A Unified and Diverse Benchmark for Speculative Decoding, arXiv 2604.09557 (2026-02, revised 2026-05), Kumar, Sanghavi, and Das, Test-Time Speculation, arXiv 2605.09329 (2026-05), capture/gpu/out-l4/eagle3-acceptance-by-position.txt, Agrawal and others, On Evaluating Performance of LLM Inference Serving Systems, arXiv 2507.09019 (2025-07), capture/gpu/out-l4/spec-real-prompts.txt, capture/gpu/out-l4/eagle3-long-outputs.txt.

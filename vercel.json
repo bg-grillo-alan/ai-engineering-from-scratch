@@ -399,6 +399,10 @@
       "destination": "/openapi.json"
     },
     {
+      "source": "/:manual(manual-[a-z0-9-]+)/:section([a-z0-9-]+)",
+      "destination": "/manual/:manual/:section.html"
+    },
+    {
       "source": "/:page(manuals|manual-[a-z0-9-]+)",
       "destination": "/:page.html"
     },
@@ -499,6 +503,19 @@
     },
     {
       "source": "/(blogs|glossary|catalog|certifications|certification|assessment|path|prereqs|roadmap|about|developer|docs|contact|privacy|sponsors|projects|project|learning-paths|developers|api|manuals|manual-[a-z0-9-]+)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        },
+        {
+          "key": "Vary",
+          "value": "Accept, Accept-Encoding"
+        }
+      ]
+    },
+    {
+      "source": "/:manual(manual-[a-z0-9-]+)/:section([a-z0-9-]+)",
       "headers": [
         {
           "key": "Cache-Control",
@@ -707,6 +724,16 @@
     {
       "source": "/:page(manuals|manual-[a-z0-9-]+).html",
       "destination": "/:page",
+      "permanent": true
+    },
+    {
+      "source": "/manual/:manual(manual-[a-z0-9-]+)/:section([a-z0-9-]+).html",
+      "destination": "/:manual/:section",
+      "permanent": true
+    },
+    {
+      "source": "/manual/:manual(manual-[a-z0-9-]+)/:section([a-z0-9-]+)",
+      "destination": "/:manual/:section",
       "permanent": true
     },
     {

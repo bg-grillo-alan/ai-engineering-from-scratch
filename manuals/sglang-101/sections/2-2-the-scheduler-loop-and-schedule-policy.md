@@ -100,6 +100,10 @@ The common advice is to make the chunk smaller, so that decode steps run more of
 
 **We measured** no gain from a smaller chunk on either machine. On the GB10 we ran the default, an explicit 8,192, and 1,024. At 1 and 2 requests per second, all three were inside the seed spread of each other. At 0.5 per second, the 1,024 chunk was worse. Its P99 ITL was 1,977 against 929 ms, and the seed ranges did not overlap.
 
+A 2025 study of chunked prefill on MoE models gives a likely reason for that loss. Each chunk of a prompt loads the expert weights again, and in that study the extra loads raised memory traffic by up to 39 percent. Qwen3-30B-A3B is an MoE model. With a chunk of 1,024, a prompt of up to 4,096 tokens runs as up to four chunks. Each chunk reads the experts again. We did not measure the expert traffic, so this is a reading, not a result.
+
+The rates of 1 and 2 per second need a second caution. In each seed, the sweep sent the same 48 prompts at every rate to one server, and it did not flush the cache. The rate of 0.5 ran first. The GB10 pool could hold those prompts, so the later runs could find many of them in the cache. That can explain why the first token at 1 and 2 per second was faster than at 0.5. [Section 5.1](#s-sglang-benchmark-serving) gives the protocol that prevents this.
+
 On the L4, this workload was more than the card could serve at every rate. Output stayed near 44 tokens per second, and the median first token took 36 to 62 seconds. The card throttled, at a median clock of 690 to 915 MHz, and this sweep did not repeat throttled runs. The worst token gap stayed between 2.5 and 2.9 s with either chunk. The 1,024 runs also ran 80 to 90 MHz slower than the default at 0.5 and 2 per second. So the small gap between the two chunks is not a chunk effect.
 
 The scheduler rule from the start of this section fits the L4 result. Prefill wins whenever the scheduler can admit something. With a full queue, a smaller chunk adds more prefill turns ahead of the decode steps, and the stream still waits.
@@ -133,7 +137,7 @@ note: The pool at startup of the server with --enable-mixed-chunk.
 
 **We measured** a smoother stream and a slower first token. The P99 ITL fell by 15 to 19 percent, outside the seed spread at 0.5 and at 2 per second. The median TTFT rose by 49 to 74 percent at 1 and 2 per second, outside the seed spread. Throughput rose by 2 to 4 percent, inside the spread. 
 
-The default run from 2026-10-17 gave the same direction. Against it, the P99 ITL fell by 16 to 29 percent. The median TTFT rose by 35 and 54 percent at 1 and 2 per second.
+The default run from 2026-10-17 gave the same direction. Against it, the P99 ITL fell by 16 to 29 percent. The median TTFT rose by 35 and 54 percent at 1 and 2 per second. The cache caution above applies to both servers at 1 and 2 per second.
 
 On our two cards with this workload, the flag was a trade, and the card decided whether you get it. When prefill keeps up, the decode tokens that ride in the prefill batch stop waiting, and each new prompt waits a little longer. When prefill cannot keep up, as on the L4, the queue sets the pace and the flag changes little.
 
@@ -171,8 +175,9 @@ The scheduler loop admits against every limit at once, and the smallest one wins
 - Expect lpm to change to FCFS above 128 waiting requests.
 - Check the log for the effective limit after you set a limit.
 - Measure P99 ITL before you make the prefill chunk smaller, because it did not help in our runs.
+- On an MoE model, expect a small chunk to cost prefill time, because each chunk reads the experts again.
 - Try --enable-mixed-chunk for a smoother stream when prefill keeps up, and expect a slower first token.
 - Expect a chunk above the default for your GPU to need more free memory at startup.
 ```
 
-Sources: python/sglang/srt/managers/scheduler.py (run_event_loop, event_loop_normal, get_next_batch_to_run, run_batch, process_batch_result), python/sglang/srt/managers/schedule_policy.py (CacheAwarePolicy, CacheAgnosticPolicy, WAITING_QUEUE_PREFIX_MATCH_MAX, _determine_active_policy, _validate_and_adjust_policy), python/sglang/srt/arg_groups/fields/schedule.py at v0.5.22; SGLang paper, arXiv 2312.07104; capture/out/server-default.log; issue https://github.com/sgl-project/sglang/issues/36889; capture/gpu/summary/gb10.json and capture/gpu/summary/l4.json (mixed); capture/gpu/sweep.py (mixed sweep); capture/gpu/incidents/l4-chunk-8192-prefill-graph-oom.txt; capture/gpu/out-gb10/server-mixed-chunk.log, capture/gpu/summary/gb10.json (mixed.mixed-chunk, mixed.graphs-on-b), capture/gpu/out-gb10/server-pools.log
+Sources: python/sglang/srt/managers/scheduler.py (run_event_loop, event_loop_normal, get_next_batch_to_run, run_batch, process_batch_result), python/sglang/srt/managers/schedule_policy.py (CacheAwarePolicy, CacheAgnosticPolicy, WAITING_QUEUE_PREFIX_MATCH_MAX, _determine_active_policy, _validate_and_adjust_policy), python/sglang/srt/arg_groups/fields/schedule.py at v0.5.22; SGLang paper, arXiv 2312.07104; capture/out/server-default.log; issue https://github.com/sgl-project/sglang/issues/36889; capture/gpu/summary/gb10.json and capture/gpu/summary/l4.json (mixed); capture/gpu/sweep.py (mixed sweep); capture/gpu/incidents/l4-chunk-8192-prefill-graph-oom.txt; capture/gpu/out-gb10/server-mixed-chunk.log, capture/gpu/summary/gb10.json (mixed.mixed-chunk, mixed.graphs-on-b), capture/gpu/out-gb10/server-pools.log, Lee and others, From Tokens to Layers: Redefining Stall-Free Scheduling for MoE Serving with Layered Prefill, arXiv 2510.08055 (2025-10); capture/gpu/sweep.py (the mixed sweep plan).

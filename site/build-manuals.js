@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { githubSourceUrl } = require('./build.js');
+const { githubSourceUrl, sourceRepository } = require('./build.js');
 const { localPath, within } = require('./build-projects.js');
 const figkit = require('../manuals/_shared/figkit.js');
 const { validateSvg } = require('../manuals/_shared/svg.js');
@@ -40,6 +40,9 @@ function slugify(text) {
 }
 function sectionAnchor(file) { return `s-${path.basename(file, '.md').replace(/^\d+-\d+-/, '').replace(/^r-\d+-/, 'ref-')}`; }
 function pageName(id) { return `manual-${id}.html`; }
+function manualUrl(manual) { return `${SITE_ORIGIN}/manual-${manual.id}`; }
+function sectionSlug(doc) { return doc.anchor.replace(/^s-/, ''); }
+function sectionPath(manual, doc) { return `/manual-${manual.id}/${sectionSlug(doc)}`; }
 
 function keyValues(lines, label, kind, required, optional = []) {
   const allowed = [...required, ...optional];
@@ -231,12 +234,29 @@ function newInline() {
   return { refs: [], repoLinks: [] };
 }
 
+let evidenceRevisionCache = null;
+
+function evidenceRevision(env = process.env) {
+  const sha = String(env.VERCEL_GIT_COMMIT_SHA || '').trim();
+  if (/^[0-9a-f]{7,40}$/i.test(sha)) return sha;
+  if (env === process.env && evidenceRevisionCache) return evidenceRevisionCache;
+  let head = '';
+  try {
+    head = require('child_process').execSync('git rev-parse HEAD', { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch (e) { head = ''; }
+  const revision = /^[0-9a-f]{40}$/.test(head) ? head : 'main';
+  if (env === process.env) evidenceRevisionCache = revision;
+  return revision;
+}
+
 function evidenceUrl(file, where) {
   const rel = path.relative(ROOT, file);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
   ensure(fs.existsSync(file), `${where}: evidence path ${rel} does not exist`);
   const kind = fs.statSync(file).isDirectory() ? 'tree' : 'blob';
-  return githubSourceUrl(rel.split(path.sep).join('/'), kind);
+  const { owner, repo } = sourceRepository();
+  const cleanPath = rel.split(path.sep).map(encodeURIComponent).join('/');
+  return `https://github.com/${owner}/${repo}/${kind}/${encodeURIComponent(evidenceRevision())}/${cleanPath}`;
 }
 
 function evidenceLink(url, label) {
@@ -329,6 +349,9 @@ function linkHtml(label, href, where, acc) {
   const [target, fragment] = href.split('#');
   acc.repoLinks.push({ path: target, where });
   const full = path.join(ROOT, target);
+  if (/^manuals\/[^/]+\/capture(?:\/|$)/.test(target)) {
+    return `<a href="${escapeHtml(evidenceUrl(full, where) + (fragment ? `#${fragment}` : ''))}" target="_blank" rel="noopener">${label}</a>`;
+  }
   const view = fs.existsSync(full) && fs.statSync(full).isFile() ? 'blob' : 'tree';
   return `<a href="${escapeHtml(githubSourceUrl(target, view) + (fragment ? `#${fragment}` : ''))}" rel="noopener">${label}</a>`;
 }
@@ -620,9 +643,10 @@ function tocHtml(manual, mode) {
   return `<nav class="m-toc" aria-label="Contents">${head}<ol>${groups.join('')}</ol></nav>`;
 }
 
-function docHtml(doc) {
+function docHtml(doc, href = '') {
   const front = doc.kind === 'front';
-  return `<section class="${front ? 'm-front-section' : 'm-section'}" id="${doc.anchor}" data-accent="${doc.accent}"><header class="m-section-head"><div class="m-section-num">${front ? '00' : doc.id}</div><h1 class="m-section-title">${escapeHtml(doc.title)}</h1>${doc.thesisHtml ? `<p class="m-thesis">${doc.thesisHtml}</p>` : ''}</header>${doc.html}</section>`;
+  const num = front ? '00' : doc.id;
+  return `<section class="${front ? 'm-front-section' : 'm-section'}" id="${doc.anchor}" data-accent="${doc.accent}"><header class="m-section-head"><div class="m-section-num">${href ? `<a class="m-section-link" href="${href}">${num}</a>` : num}</div><h1 class="m-section-title">${escapeHtml(doc.title)}</h1>${doc.thesisHtml ? `<p class="m-thesis">${doc.thesisHtml}</p>` : ''}</header>${doc.html}</section>`;
 }
 
 function ditherHtml(seed, label, slim) {
@@ -677,14 +701,15 @@ function coverHtml(manual, mode) {
 function manualArticle(manual, mode) {
   const band = (seed, label) => (mode === 'web' ? ditherHtml(`${manual.id}-${seed}`, label, true) : '');
   const body = [];
-  if (manual.front) body.push(docHtml(manual.front));
+  const sectionHtml = doc => docHtml(doc, mode === 'web' && manual.status === 'ready' ? sectionPath(manual, doc) : '');
+  if (manual.front) body.push(sectionHtml(manual.front));
   for (const part of manual.parts) {
     body.push(partHtml(part, `Part ${part.number}`, band(part.anchor, `Part ${part.number} · ${part.title}`)));
-    for (const section of part.sections) body.push(docHtml(section));
+    for (const section of part.sections) body.push(sectionHtml(section));
   }
   if (manual.reference) {
     body.push(partHtml(manual.reference, 'Reference', band('reference', manual.reference.title)));
-    for (const section of manual.reference.sections) body.push(docHtml(section));
+    for (const section of manual.reference.sections) body.push(sectionHtml(section));
   }
   return `<article class="manual">${coverHtml(manual, mode)}${mode === 'print' ? tocHtml(manual, 'print') : ''}${body.join('\n')}\n${colophonHtml(manual)}</article>`;
 }
@@ -701,20 +726,109 @@ function highlightsScripts(highlights) {
 `;
 }
 
-function pageShell({ title, ogTitle, description, canonical, noindex, card, main, highlights }) {
+function jsonLdHtml(graph) {
+  return `<script type="application/ld+json">${JSON.stringify({ '@context': 'https://schema.org', '@graph': graph }).replace(/</g, '\\u003c')}</script>\n`;
+}
+
+function breadcrumbLd(url, trail) {
+  return {
+    '@type': 'BreadcrumbList',
+    '@id': `${url}#breadcrumb`,
+    itemListElement: trail.map(([name, item], index) => ({ '@type': 'ListItem', position: index + 1, name, item })),
+  };
+}
+
+function articleLd(manual, { url, headline, description, modified, extra = {} }) {
+  return {
+    '@type': 'TechArticle',
+    '@id': `${url}#article`,
+    url,
+    mainEntityOfPage: url,
+    headline,
+    description,
+    image: `${SITE_ORIGIN}/og/manual/${manual.id}.png`,
+    inLanguage: 'en',
+    isAccessibleForFree: true,
+    dateModified: modified,
+    version: manual.edition,
+    author: { '@type': 'Person', '@id': `${SITE_ORIGIN}/#maintainer`, name: AUTHOR },
+    publisher: { '@type': 'Organization', name: 'AI Engineering from Scratch', url: `${SITE_ORIGIN}/` },
+    about: { '@type': 'SoftwareApplication', name: manual.pin.subject, softwareVersion: manual.pin.version },
+    breadcrumb: { '@id': `${url}#breadcrumb` },
+    ...extra,
+  };
+}
+
+function plainText(html) {
+  return String(html).replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+}
+
+function clip(text, max = 160) {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  return `${cut.slice(0, cut.lastIndexOf(' ') > 0 ? cut.lastIndexOf(' ') : cut.length).replace(/[,;:.]$/, '')}…`;
+}
+
+function shallowCommits() {
+  try {
+    const file = require('child_process').execFileSync('git', ['rev-parse', '--git-path', 'shallow'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const full = path.resolve(ROOT, file);
+    return new Set(fs.existsSync(full) ? fs.readFileSync(full, 'utf8').split(/\s+/).filter(Boolean) : []);
+  } catch (error) {
+    return new Set();
+  }
+}
+
+function lastModified(files, fallback, shallow) {
+  try {
+    const out = require('child_process').execFileSync('git', ['log', '-1', '--format=%H %cs', '--', ...files], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const [hash, date] = out.split(' ');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date || '') && !shallow.has(hash)) return date;
+  } catch (error) {
+    return fallback;
+  }
+  return fallback;
+}
+
+function readingOrder(manual) {
+  const order = [];
+  if (manual.front) order.push({ doc: manual.front, part: null });
+  for (const part of manual.parts) for (const doc of part.sections) order.push({ doc, part: { label: `Part ${part.number}`, title: part.title, anchor: part.anchor } });
+  if (manual.reference) for (const doc of manual.reference.sections) order.push({ doc, part: { label: 'Reference', title: manual.reference.title, anchor: manual.reference.anchor } });
+  return order;
+}
+
+function sectionDescription(doc) {
+  const first = doc.blocks.find(block => block.type === 'paragraph' && !/^Sources:\s/.test(block.text));
+  const text = doc.thesisHtml ? plainText(doc.thesisHtml) : plainText(first ? inlineHtml(first.text, doc.label, newInline()) : doc.title);
+  return clip(text);
+}
+
+function dated(manual) {
+  if (manual.modified) return manual;
+  const shallow = shallowCommits();
+  manual.modified = lastModified([rel(manual.dir)], manual.pin.verified, shallow);
+  for (const doc of manual.documents) {
+    const svgs = doc.blocks.filter(block => block.type === 'figure').map(block => rel(path.join(manual.dir, 'figures', `${block.id}.svg`)));
+    doc.modified = lastModified([doc.label, manual.label, ...svgs], manual.pin.verified, shallow);
+  }
+  return manual;
+}
+
+function pageShell({ title, ogTitle, description, canonical, noindex, card, main, highlights, jsonld = [], rooted = false, self = '' }) {
   const css = shared('tokens.css') + shared('manual.css') + shared('web.css');
   return `<!DOCTYPE html>
 <html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${escapeHtml(title)}</title>
+${rooted ? '<base href="/">\n' : ''}<title>${escapeHtml(title)}</title>
 <meta name="description" content="${escapeHtml(description)}">
 ${noindex ? '<meta name="robots" content="noindex">\n' : ''}<link rel="canonical" href="${canonical}">
 <meta property="og:title" content="${escapeHtml(ogTitle)}">
 <meta property="og:description" content="${escapeHtml(description)}">
 <meta property="og:image" content="${SITE_ORIGIN}/og/${card}.png">
-<link rel="icon" href="/favicon.ico" sizes="48x48">
+${jsonld.length ? jsonLdHtml(jsonld) : ''}<link rel="icon" href="/favicon.ico" sizes="48x48">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -725,7 +839,7 @@ ${highlights ? '<link rel="stylesheet" href="highlights.css">\n' : ''}<style>${c
 <script>${shared('theme.js')}</script>
 </head>
 <body>
-<a href="#main" class="skip-link">Skip to content</a>
+<a href="${self}#main" class="skip-link">Skip to content</a>
 ${SITE_HEADER}
 ${main}
 <footer class="site-footer"><div class="container footer-inner"><p>AI Engineering from Scratch · open source · free forever.</p><div class="footer-links"><a href="index.html">Home</a><a href="manuals.html">Manuals</a><a href="catalog.html">Course catalog</a><a href="https://github.com/rohitg00/ai-engineering-from-scratch" target="_blank" rel="noopener">GitHub</a><a href="sponsors.html">Sponsor us</a></div></div></footer>
@@ -741,16 +855,159 @@ ${highlightsScripts(highlights)}</body>
 }
 
 function webPage(manual) {
+  const ready = manual.status === 'ready';
+  const url = manualUrl(manual);
+  const jsonld = ready ? [
+    articleLd(dated(manual), {
+      url,
+      headline: manual.title,
+      description: manual.summary,
+      modified: manual.modified,
+      extra: {
+        alternativeHeadline: manual.subtitle,
+        hasPart: readingOrder(manual).map(({ doc }) => ({ '@type': 'WebPage', name: doc.title, url: `${SITE_ORIGIN}${sectionPath(manual, doc)}` })),
+      },
+    }),
+    breadcrumbLd(url, [['Home', `${SITE_ORIGIN}/`], ['Manuals', `${SITE_ORIGIN}/manuals`], [manual.title, url]]),
+  ] : [];
   return pageShell({
     title: `${manual.title}: ${manual.subtitle} - AI Engineering from Scratch`,
     ogTitle: `${manual.title} · AI Engineering from Scratch`,
     description: manual.summary,
     canonical: `${SITE_ORIGIN}/${pageName(manual.id)}`,
-    noindex: manual.status === 'draft',
-    card: manual.status === 'ready' ? `manual/${manual.id}` : 'page/manuals',
+    noindex: !ready,
+    card: ready ? `manual/${manual.id}` : 'page/manuals',
     main: `<main id="main" class="m-web"><div class="m-layout"><aside class="m-sidebar">${tocHtml(manual, 'web')}</aside>${manualArticle(manual, 'web')}</div></main>`,
     highlights: { id: manual.id, title: manual.title },
+    jsonld,
   });
+}
+
+function sectionTocHtml(manual, current) {
+  const base = `/manual-${manual.id}`;
+  const link = (href, kicker, title, here) => `<a href="${href}"${here ? ' aria-current="page"' : ''}><span class="m-kicker">${kicker}</span><span>${escapeHtml(title)}</span></a>`;
+  const item = doc => `<li>${link(sectionPath(manual, doc), doc.id, doc.title, doc === current)}</li>`;
+  const group = (accent, href, kicker, title, sections = [], here = false) => `<li class="m-toc-part" data-accent="${accent}">${link(href, kicker, title, here)}${sections.length ? `<ol>${sections.map(item).join('')}</ol>` : ''}</li>`;
+  const groups = [];
+  if (manual.front) groups.push(group('grey', sectionPath(manual, manual.front), '00', manual.front.title, [], manual.front === current));
+  for (const part of manual.parts) groups.push(group(part.accent, `${base}#${part.anchor}`, String(part.number).padStart(2, '0'), part.title, part.sections));
+  if (manual.reference) groups.push(group(manual.reference.accent, `${base}#p-r`, 'R', manual.reference.title, manual.reference.sections));
+  return `<nav class="m-toc" aria-label="Contents"><div class="m-kicker m-toc-label"><a href="${base}">${escapeHtml(manual.title)}</a></div><ol>${groups.join('')}</ol></nav>`;
+}
+
+function sectionTargets(manual) {
+  const targets = new Map();
+  for (const { doc } of readingOrder(manual)) {
+    for (const match of docHtml(doc).matchAll(/\sid="([^"]+)"/g)) if (!targets.has(match[1])) targets.set(match[1], sectionPath(manual, doc));
+  }
+  return targets;
+}
+
+function retarget(html, manual, targets) {
+  return html.replace(/(<a\b[^>]*\shref=")#([^"]+)"/g, (match, open, id) => `${open}${targets.get(id) || `/manual-${manual.id}`}#${id}"`);
+}
+
+function sectionPage(manual, order, index, targets) {
+  const { doc, part } = order[index];
+  const url = `${SITE_ORIGIN}${sectionPath(manual, doc)}`;
+  const description = sectionDescription(doc);
+  const crumbs = [`<a href="/manuals">Manuals</a>`, `<a href="/manual-${manual.id}">${escapeHtml(manual.title)}</a>`];
+  if (part) crumbs.push(`<a href="/manual-${manual.id}#${part.anchor}">${escapeHtml(`${part.label} · ${part.title}`)}</a>`);
+  const pager = [];
+  if (index > 0) pager.push(`<a class="m-action" rel="prev" href="${sectionPath(manual, order[index - 1].doc)}">Previous: ${escapeHtml(order[index - 1].doc.title)}</a>`);
+  pager.push(action(`/manual-${manual.id}#${doc.anchor}`, 'Read it in the full manual'));
+  if (index < order.length - 1) pager.push(`<a class="m-action is-primary" rel="next" href="${sectionPath(manual, order[index + 1].doc)}">Next: ${escapeHtml(order[index + 1].doc.title)}</a>`);
+  const trail = [['Home', `${SITE_ORIGIN}/`], ['Manuals', `${SITE_ORIGIN}/manuals`], [manual.title, manualUrl(manual)], [doc.title, url]];
+  const article = `<article class="manual m-section-page"><div class="m-kicker m-crumbs">${crumbs.join(' / ')}</div>${retarget(docHtml(doc), manual, targets)}<nav class="m-cover-actions m-pager" aria-label="Sections">${pager.join('')}</nav><p class="m-kicker m-section-pin">${pinLine(manual)}</p></article>`;
+  return pageShell({
+    title: `${doc.title} - ${manual.title} - AI Engineering from Scratch`,
+    ogTitle: `${doc.title} · ${manual.title}`,
+    description,
+    canonical: url,
+    noindex: false,
+    card: `manual/${manual.id}`,
+    main: `<main id="main" class="m-web"><div class="m-layout"><aside class="m-sidebar">${sectionTocHtml(manual, doc)}</aside>${article}</div></main>`,
+    jsonld: [
+      articleLd(manual, { url, headline: doc.title, description, modified: doc.modified, extra: { isPartOf: { '@type': 'TechArticle', '@id': `${manualUrl(manual)}#article`, name: manual.title, url: manualUrl(manual) } } }),
+      breadcrumbLd(url, trail),
+    ],
+    rooted: true,
+    self: sectionPath(manual, doc),
+  });
+}
+
+function writeSections(manual, siteDir) {
+  const dir = path.join(siteDir, 'manual', `manual-${manual.id}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  if (manual.status !== 'ready') return 0;
+  dated(manual);
+  fs.mkdirSync(dir, { recursive: true });
+  const order = readingOrder(manual);
+  const targets = sectionTargets(manual);
+  order.forEach(({ doc }, index) => fs.writeFileSync(path.join(dir, `${sectionSlug(doc)}.html`), sectionPage(manual, order, index, targets), 'utf8'));
+  return order.length;
+}
+
+function sitemapXml(urls) {
+  const body = urls.map(u => `  <url>\n    <loc>${u.loc}</loc>\n    <lastmod>${u.lastmod}</lastmod>\n  </url>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${body}\n</urlset>\n`;
+}
+
+function manualSitemapUrls(ready) {
+  const urls = [];
+  for (const manual of ready.map(dated)) {
+    urls.push({ loc: manualUrl(manual), lastmod: manual.modified });
+    for (const { doc } of readingOrder(manual)) urls.push({ loc: `${SITE_ORIGIN}${sectionPath(manual, doc)}`, lastmod: doc.modified });
+  }
+  if (urls.length) urls.unshift({ loc: `${SITE_ORIGIN}/manuals`, lastmod: urls.map(u => u.lastmod).sort().pop() });
+  return urls;
+}
+
+function writeSitemap(ready, siteDir) {
+  const file = path.join(siteDir, 'sitemap-manuals.xml');
+  const urls = manualSitemapUrls(ready);
+  if (!urls.length) {
+    fs.rmSync(file, { force: true });
+    return 0;
+  }
+  fs.writeFileSync(file, sitemapXml(urls), 'utf8');
+  const index = path.join(siteDir, 'sitemap-index.xml');
+  if (fs.existsSync(index)) {
+    const text = fs.readFileSync(index, 'utf8');
+    const entry = `  <sitemap>\n    <loc>${SITE_ORIGIN}/sitemap-manuals.xml</loc>\n  </sitemap>\n`;
+    if (!text.includes(`${SITE_ORIGIN}/sitemap-manuals.xml`)) fs.writeFileSync(index, text.replace('</sitemapindex>', `${entry}</sitemapindex>`), 'utf8');
+  }
+  return urls.length;
+}
+
+function llmsBlock(ready) {
+  let out = `## Manuals\nLong technical manuals. Each one explains one subject at one exact version, and each section also has its own page. [Manuals index](${SITE_ORIGIN}/manuals) [Manual sitemap](${SITE_ORIGIN}/sitemap-manuals.xml)\n\n`;
+  for (const manual of ready) {
+    out += `### [${manual.title}](${manualUrl(manual)}): ${manual.subtitle}\n${manual.summary} Pinned to ${manual.pin.subject} ${manual.pin.version}.\n\n`;
+    for (const { doc } of readingOrder(manual)) out += `- [${doc.kind === 'front' ? '' : `${doc.id} `}${doc.title}](${SITE_ORIGIN}${sectionPath(manual, doc)}): ${sectionDescription(doc)}\n`;
+    out += '\n';
+  }
+  return out;
+}
+
+function writeLlms(ready, siteDir) {
+  const file = path.join(siteDir, 'llms.txt');
+  if (!fs.existsSync(file)) return false;
+  let text = fs.readFileSync(file, 'utf8');
+  const start = text.indexOf('## Manuals\n');
+  if (start >= 0) {
+    const end = text.indexOf('\n## ', start + 1);
+    text = text.slice(0, start) + (end >= 0 ? text.slice(end + 1) : '');
+  }
+  if (!ready.length) {
+    fs.writeFileSync(file, text, 'utf8');
+    return false;
+  }
+  const anchor = text.indexOf('## Developer resources');
+  const at = anchor >= 0 ? text.indexOf('\n## ', anchor + 1) : -1;
+  text = at >= 0 ? `${text.slice(0, at + 1)}${llmsBlock(ready)}${text.slice(at + 1)}` : `${text.replace(/\n*$/, '\n\n')}${llmsBlock(ready)}`;
+  fs.writeFileSync(file, text, 'utf8');
+  return true;
 }
 
 const INDEX_LEDE = 'Each manual explains one subject at one exact version, from its purpose to each request and response. The examples come from recorded runs of a working system, and each rule links to the specification text that it comes from.';
@@ -765,20 +1022,27 @@ function manualCard(manual) {
   if (manual.status === 'ready') actions.push(action(pdfUrl(manual), 'Download the PDF'));
   actions.push(sourceAction(manual));
   const draft = manual.status === 'draft' ? '<div class="m-draft-note">Draft edition</div>' : '';
-  return `<article class="m-index-card">${draft}<div class="m-kicker m-index-pin">${pinLine(manual)}</div><h2 class="m-index-name"><a href="${pageName(manual.id)}">${escapeHtml(manual.title)}</a></h2><p class="m-index-subtitle">${escapeHtml(manual.subtitle)}</p><p class="m-index-summary">${escapeHtml(manual.summary)}</p>${partDots(manual)}<div class="m-kicker m-index-stats">${manual.parts.length} parts · ${sectionCount(manual)} sections · ${manual.figures.size} figures</div><div class="m-index-actions">${actions.join('')}</div>${plateHtml(manual, 'class="m-fig m-plate"')}</article>`;
+  return `<article class="m-index-card">${plateHtml(manual, 'class="m-fig m-plate"')}<div class="m-index-body">${draft}<div class="m-kicker m-index-pin">${pinLine(manual)}</div><h2 class="m-index-name"><a href="${pageName(manual.id)}">${escapeHtml(manual.title)}</a></h2><p class="m-index-subtitle">${escapeHtml(manual.subtitle)}</p><p class="m-index-summary">${escapeHtml(manual.summary)}</p>${partDots(manual)}<div class="m-kicker m-index-stats">${manual.parts.length} parts · ${sectionCount(manual)} sections · ${manual.figures.size} figures</div><div class="m-index-actions">${actions.join('')}</div></div></article>`;
 }
 
 function indexPage(listed) {
   const gives = INDEX_GIVES.map(([label, text]) => `<li><span class="m-kicker">${label}</span><p>${text}</p></li>`).join('');
-  const body = listed.length ? listed.map(manualCard).join('') : '<p class="m-index-empty">No manual is published yet.</p>';
+  const body = listed.length ? `<div class="m-index-grid">${listed.map(manualCard).join('')}</div>` : '<p class="m-index-empty">No manual is published yet.</p>';
+  const ready = listed.filter(manual => manual.status === 'ready');
+  const url = `${SITE_ORIGIN}/manuals`;
+  const jsonld = ready.length ? [
+    { '@type': 'CollectionPage', '@id': `${url}#page`, url, name: 'Manuals', inLanguage: 'en', breadcrumb: { '@id': `${url}#breadcrumb` }, mainEntity: { '@type': 'ItemList', itemListElement: ready.map((manual, index) => ({ '@type': 'ListItem', position: index + 1, name: manual.title, url: manualUrl(manual) })) } },
+    breadcrumbLd(url, [['Home', `${SITE_ORIGIN}/`], ['Manuals', url]]),
+  ] : [];
   return pageShell({
+    jsonld,
     title: 'Manuals - AI Engineering from Scratch',
     ogTitle: 'Manuals · AI Engineering from Scratch',
     description: 'Long technical manuals that explain one subject at one exact version, from its purpose to each request and response.',
     canonical: `${SITE_ORIGIN}/manuals.html`,
     noindex: !listed.some(manual => manual.status === 'ready'),
     card: 'page/manuals',
-    main: `<main id="main" class="m-web"><div class="manual m-index"><section class="m-index-hero">${ditherHtml('manuals', 'Manuals', false)}<div class="m-kicker m-cover-kicker">AI Engineering from Scratch</div><h1 class="m-index-title">Manuals</h1><p class="m-index-lede">${INDEX_LEDE}</p><ul class="m-index-gives">${gives}</ul></section>${body}</div></main>`,
+    main: `<main id="main" class="m-web"><div class="manual m-index"><section class="m-index-hero">${ditherHtml('manuals', 'Manuals', true)}<div class="m-index-intro"><div class="m-kicker m-cover-kicker">AI Engineering from Scratch</div><h1 class="m-index-title">Manuals</h1><p class="m-index-lede">${INDEX_LEDE}</p></div><ul class="m-index-gives">${gives}</ul></section>${body}</div></main>`,
   });
 }
 
@@ -836,11 +1100,18 @@ function writeWeb(manuals, siteDir = SITE, options = {}) {
   if (!options.only) {
     for (const name of fs.readdirSync(siteDir).filter(file => /^manual-[a-z0-9-]+\.html$/.test(file))) fs.rmSync(path.join(siteDir, name));
   }
-  for (const manual of manuals) fs.writeFileSync(path.join(siteDir, pageName(manual.id)), webPage(manual), 'utf8');
+  if (!options.only) fs.rmSync(path.join(siteDir, 'manual'), { recursive: true, force: true });
+  for (const manual of manuals) {
+    fs.writeFileSync(path.join(siteDir, pageName(manual.id)), webPage(manual), 'utf8');
+    writeSections(manual, siteDir);
+  }
   if (options.only) return null;
   const listed = manuals.filter(manual => options.drafts || manual.status === 'ready');
+  const ready = manuals.filter(manual => manual.status === 'ready');
   fs.writeFileSync(path.join(siteDir, 'manuals-data.js'), `window.AIFS_MANUALS = ${JSON.stringify(listed.map(manualSummary), null, 2)};\n`, 'utf8');
   fs.writeFileSync(path.join(siteDir, 'manuals.html'), indexPage(listed), 'utf8');
+  writeSitemap(ready, siteDir);
+  writeLlms(ready, siteDir);
   return listed.length;
 }
 
@@ -884,7 +1155,10 @@ module.exports = {
   SCHEMA,
   LISTING_LANGS,
   evidenceUrl,
+  evidenceRevision,
   inlineHtml,
+  llmsBlock,
+  manualSitemapUrls,
   readerCaption,
   tableHtml,
   loadAll,
