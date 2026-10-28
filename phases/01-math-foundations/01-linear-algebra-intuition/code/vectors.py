@@ -1,3 +1,4 @@
+import numpy as np
 class Vector:
     def __init__(self, components):
         self.components = list(components)
@@ -34,6 +35,13 @@ class Vector:
     def project_onto(self, other):
         scalar = self.dot(other) / other.dot(other)
         return Vector([scalar * x for x in other.components])
+    
+    def angle_between(self, other):
+        cosine_similarity = self.cosine_similarity(other)
+        cosine_similarity = max(-1,cosine_similarity)
+        cosine_similarity = min (1, cosine_similarity)
+        angle_rad = np.arccos(cosine_similarity)
+        return angle_rad * 180 / np.pi
 
     def __repr__(self):
         return f"Vector({self.components})"

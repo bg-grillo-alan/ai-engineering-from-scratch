@@ -111,6 +111,8 @@ class Matrix:
             [self.data[j][i] for j in range(self.rows)]
             for i in range(self.cols)
         ])
+    
+    
 
     @property
     def T(self):
@@ -143,6 +145,25 @@ class Matrix:
             [-self.data[1][0] / det, self.data[0][0] / det]
         ])
 
+    def inverse_3x3(self) : 
+        if self.shape != (3,3) : 
+            raise ValueError("This method only works for 3x3 matrices")
+        det = self.determinant()
+        if abs(det) < 1e-10 : 
+            raise ValueError("Matrix is singular, no inverse exists")
+        ## Compute the adjugate
+        ## 1 matrix of minors
+        adj = [[0,0,0],[0,0,0],[0,0,0]]
+        for j in range(self.cols):
+            for i in range(self.rows) : 
+                minor = Matrix([
+                    [self.data[m][k] for k in range(self.cols) if k != j]
+                    for m in range(self.rows) if m != i
+                ])
+                adj[i][j] = ((-1) ** (i+j) * minor.determinant())
+        adj = Matrix(adj)
+        adj = adj.T
+        return adj.scalar_multiply(1/det)
     @staticmethod
     def identity(n):
         return Matrix([

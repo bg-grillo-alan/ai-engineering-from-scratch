@@ -164,11 +164,16 @@ def demo_shape_checking():
 def demo_nan_detection():
     print("\n--- 5. NaN Detection ---")
 
+    class NanActivation(nn.Module):
+
+        def forward(self, x):
+            return x / 0  # This will produce NaNs intentionally
     model = nn.Sequential(
         nn.Linear(784, 256),
         nn.ReLU(),
         nn.Linear(256, 10),
-    )
+        ##NanActivation()   # Introduce a potential source of NaNs
+        )
 
     x = torch.randn(4, 784)
     target = torch.randint(0, 10, (4,))

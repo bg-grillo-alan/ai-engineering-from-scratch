@@ -12,6 +12,10 @@ dist/
 build/
 .eggs/
 
+data/*.parquet
+data/*.csv
+models/
+
 .ipynb_checkpoints/
 *.ipynb_metadata/
 
