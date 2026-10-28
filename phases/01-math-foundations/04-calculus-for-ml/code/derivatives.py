@@ -24,7 +24,7 @@ def gradient_descent_1d(f, df, x0, lr=0.1, steps=20):
     for step in range(steps):
         grad = df(x)
         x = x - lr * grad
-        history.append((step, x, f(x)))
+        history.append((step, x, f(x),grad))
     return x, history
 
 
