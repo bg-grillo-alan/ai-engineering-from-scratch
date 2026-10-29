@@ -76,9 +76,7 @@ def demo_mnist():
 
     from sklearn.datasets import fetch_openml
 
-    mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
-    X = mnist.data[:5000].astype(float)
-    y = mnist.target[:5000].astype(int)
+    
 
     pca_50 = PCA(n_components=50)
     X_pca50 = pca_50.fit_transform(X)
